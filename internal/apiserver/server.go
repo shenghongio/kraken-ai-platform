@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-	
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shenghongio/kraken-ai-platform/internal/apiserver/middleware"
 	"github.com/shenghongio/kraken-ai-platform/orchestrator/api/v1"
 	postgres2 "github.com/shenghongio/kraken-ai-platform/orchestrator/persistence/postgres"
 	"github.com/shenghongio/kraken-ai-platform/platform/config"
+	"github.com/shenghongio/kraken-ai-platform/platform/database"
+	"github.com/shenghongio/kraken-ai-platform/platform/health"
 )
 
 var ErrServerClosed = fmt.Errorf("http: Server closed")
@@ -35,15 +37,17 @@ func NewServer(logger *slog.Logger, cfg HTTPConfigProvider, pool *pgxpool.Pool) 
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	
+
 	// Handler 路由
 	taskRepo := postgres2.NewTaskRepository(s.pool, s.cfg.GetLeaseTTL())
 	taskHandler := v1.NewTaskHandler(taskRepo, s.logger)
-	healthHandler := v1.NewHealthHandler(s.pool, s.logger)
+	checker := health.NewChecker()
+	checker.Register("database", database.NewPoolProbe(s.pool))
+	healthHandler := v1.NewHealthHandler(checker, s.logger)
 	agentRepository := postgres2.NewAgentRepository(s.pool)
 	newAgentHandler := v1.NewAgentHandler(agentRepository, taskRepo, s.logger)
 	callbackHandler := v1.NewCallbackHandler(taskRepo, s.logger)
-	
+
 	// 拼接 http 请求url
 	mux.HandleFunc("GET /healthz", healthHandler.Healthz)
 	mux.HandleFunc("GET /readyz", healthHandler.Readyz)
@@ -51,14 +55,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/tasks", taskHandler.List)
 	mux.HandleFunc("GET /v1/tasks/{id}", taskHandler.GetById)
 	mux.HandleFunc("POST /v1/tasks/{id}/cancel", taskHandler.Cancel)
-	
+
 	mux.HandleFunc("POST /v1/agents/register", newAgentHandler.Register)
 	mux.HandleFunc("POST /v1/agents/heartbeat", newAgentHandler.Heartbeat)
 	mux.HandleFunc("POST /v1/tasks/claim", newAgentHandler.Claim)
 	mux.HandleFunc("POST /v1/tasks/callback", callbackHandler.Callback)
-	
+
 	var handler http.Handler = mux
-	
+
 	// 每次请求时嵌入调用 中间件顺序: RequestID → RequestLogger → Recover → AccessLog
 	// RequestLogger 必须在 RequestID 之后：因为 RequestLogger 要从 context 取 request_id 来构建请求级 logger。
 	// RequestLogger 必须在 Recover 和 AccessLog 之前：这样 panic 日志和访问日志都能通过 context 拿到带 request_id 的 logger。
@@ -67,7 +71,7 @@ func (s *Server) Handler() http.Handler {
 	handler = middleware.Recover(s.logger)(handler)
 	handler = middleware.RequestLogger(s.logger)(handler)
 	handler = middleware.RequestID(handler)
-	
+
 	return handler
 }
 
