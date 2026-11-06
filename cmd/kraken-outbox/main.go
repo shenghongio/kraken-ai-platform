@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
-	
+
 	"github.com/shenghongio/kraken-ai-platform/internal/bootstrap"
 	"github.com/shenghongio/kraken-ai-platform/internal/dispatch"
 	"github.com/shenghongio/kraken-ai-platform/orchestrator/persistence/postgres"
 	"github.com/shenghongio/kraken-ai-platform/platform/banner"
+	"github.com/shenghongio/kraken-ai-platform/platform/shutdown"
 )
 
 const (
@@ -32,7 +31,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
-	
+
 	if err := bootstrap.ValidateConfig(cfg, serviceName); err != nil {
 		return fmt.Errorf("failed to validate configuration: %w", err)
 	}
@@ -44,41 +43,48 @@ func run() error {
 		slog.Duration("outbox_interval", cfg.OutboxInterval),
 		slog.Duration("shutdown_timeout", shutdownTimeout),
 	)
-	
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	
+
+	parentCtx, stopParent := context.WithCancel(context.Background())
+	defer stopParent()
+	ctx, cancelSignal, sigChan := shutdown.Context(parentCtx)
+	defer cancelSignal()
+
 	deps, err := bootstrap.InitDeps(ctx, cfg, logger, serviceName)
 	if err != nil {
 		return fmt.Errorf("init dependencies: %w", err)
 	}
-	defer bootstrap.CloseDeps(deps)
-	
+
 	outboxRepo := postgres.NewOutboxRepository(deps.Pool)
 	dispatcher := dispatch.NewOutboxDispatcher(outboxRepo, deps.Redis, logger, cfg.OutboxInterval)
-	
+
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("outbox dispatcher started")
 		errCh <- dispatcher.Run(ctx)
 	}()
-	
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	
+
+	var runErr error
 	select {
 	case sig := <-sigChan:
 		logger.Info("received shutdown signal", slog.String("signal", sig.String()))
 	case err := <-errCh:
 		if err != nil {
 			logger.Error("outbox dispatcher error", slog.Any("error", err))
-			cancel()
-			return fmt.Errorf("outbox dispatcher error: %w", err)
+			runErr = fmt.Errorf("outbox dispatcher error: %w", err)
+		} else {
+			logger.Info("outbox dispatcher stopped")
 		}
-		logger.Info("outbox dispatcher stopped")
 	}
-	
-	cancel()
+	stopParent()
+
 	logger.Info("stopped", slog.String("service", serviceName), slog.Duration("shutdown_timeout", shutdownTimeout))
-	return nil
+	if err := shutdown.DrainWithTimeout(shutdownTimeout,
+		shutdown.Hook{Name: "deps", Fn: func(context.Context) error {
+			bootstrap.CloseDeps(deps)
+			return nil
+		}},
+	); err != nil {
+		logger.Error("shutdown error", slog.Any("error", err))
+	}
+	return runErr
 }

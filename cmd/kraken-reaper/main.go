@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
-	
+
 	"github.com/shenghongio/kraken-ai-platform/internal/bootstrap"
 	"github.com/shenghongio/kraken-ai-platform/orchestrator/lease"
 	"github.com/shenghongio/kraken-ai-platform/platform/banner"
+	"github.com/shenghongio/kraken-ai-platform/platform/shutdown"
 )
 
 const (
@@ -43,35 +42,46 @@ func run() error {
 		slog.Duration("interval", reaperConfig.LeaseReaperInterval),
 		slog.Duration("shutdown_timeout", shutdownTimeout),
 	)
-	
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	defer cancelFunc()
-	deps, err := bootstrap.InitDeps(ctx, reaperConfig, reaperLogger, serviceName)
+
+	parentCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	signalCtx, cancelSignal, sigCh := shutdown.Context(parentCtx)
+	defer cancelSignal()
+
+	deps, err := bootstrap.InitDeps(signalCtx, reaperConfig, reaperLogger, serviceName)
 	if err != nil {
 		return fmt.Errorf("failed to initialize dependencies: %w", err)
 	}
-	defer bootstrap.CloseDeps(deps)
+
 	reaper := lease.NewReaper(deps.Pool, reaperLogger, reaperConfig.LeaseReaperInterval)
 	errCh := make(chan error, 1)
 	go func() {
 		reaperLogger.Info("starting reaper")
-		errCh <- reaper.Run(ctx)
+		errCh <- reaper.Run(signalCtx)
 	}()
-	
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	var runErr error
 	select {
 	case sig := <-sigCh:
 		reaperLogger.Info("received shutdown signal", slog.String("signal", sig.String()))
 	case err := <-errCh:
 		if err != nil {
 			reaperLogger.Error("lease reaper error", slog.Any("error", err))
-			cancelFunc()
-			return fmt.Errorf("lease reaper error: %w", err)
+			runErr = fmt.Errorf("lease reaper error: %w", err)
+		} else {
+			reaperLogger.Info("lease reaper shutdown")
 		}
-		reaperLogger.Info("lease reaper shutdown")
 	}
-	cancelFunc()
+	stop()
+
 	reaperLogger.Info("kraken-reaper shutting down", slog.Duration("shutdown_timeout", shutdownTimeout))
-	return nil
+	if err := shutdown.DrainWithTimeout(shutdownTimeout,
+		shutdown.Hook{Name: "deps", Fn: func(context.Context) error {
+			bootstrap.CloseDeps(deps)
+			return nil
+		}},
+	); err != nil {
+		reaperLogger.Error("shutdown error", slog.Any("error", err))
+	}
+	return runErr
 }

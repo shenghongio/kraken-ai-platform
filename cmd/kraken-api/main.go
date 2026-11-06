@@ -8,10 +8,11 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-	
+
 	"github.com/shenghongio/kraken-ai-platform/internal/apiserver"
 	"github.com/shenghongio/kraken-ai-platform/internal/bootstrap"
 	"github.com/shenghongio/kraken-ai-platform/platform/banner"
+	"github.com/shenghongio/kraken-ai-platform/platform/shutdown"
 )
 
 // 功能职责：
@@ -56,7 +57,7 @@ func main() {
 
 // run 服务入口
 func run() error {
-	
+
 	// 加载配置
 	// 配置加载顺序：默认值 -> YAML 文件 -> 环境变量 -> 命令行 flag
 	// 环境变量格式：KRAKEN_HTTP__ADDR -> http.addr
@@ -65,7 +66,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("file load to configuration: %w", err)
 	}
-	
+
 	// 校验配置，如果配置校验失败，不允许启动服务
 	if err := bootstrap.ValidateConfig(apiConfig, serviceName); err != nil {
 		return fmt.Errorf("bootstrap.ValidateConfig: %w", err)
@@ -79,7 +80,7 @@ func run() error {
 		slog.String("log_level", apiConfig.Log.Level),
 		slog.String("log_format", apiConfig.Log.Format),
 	)
-	
+
 	// 初始化依赖
 	// PostgreSQL：权威数据源，失败则启动失败
 	// Redis：通知通道，失败不阻塞启动
@@ -89,9 +90,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init dependencies: %w", err)
 	}
-	// 延迟关闭依赖，取保服务推出时释放资源
-	defer bootstrap.CloseDeps(deps)
-	
+
 	// HTTP Server 包含：
 	// - 路由注册（tasks、agents、health）
 	// - 中间件链（按执行顺序）：
@@ -99,7 +98,7 @@ func run() error {
 	//   2. RequestLogger -> 请求级日志（附带 request_id、method、path）
 	//   3. Recover     -> 捕获下游 panic，防止服务器崩溃
 	//   4. AccessLog   -> 记录访问日志（耗时、状态码）
-	
+
 	server := apiserver.NewServer(apiLogger, apiConfig, deps.Pool)
 	// HTTP Server 在独立 goroutine 中运行
 	// 使用 error channel 接收 server 错误，避免端口占用等场景下假死
@@ -108,7 +107,7 @@ func run() error {
 		apiLogger.Info("Starting http server", slog.String("name", serviceName), slog.String("address", apiConfig.HTTP.Addr))
 		errCh <- server.Start()
 	}()
-	
+
 	// 等待信号或者 Server 错误
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -121,19 +120,34 @@ func run() error {
 		if err != nil && err != apiserver.ErrServerClosed {
 			apiLogger.Error("http server error", slog.Any("error", err))
 			cancelFunc()
+			if drainErr := shutdown.DrainWithTimeout(shutdownTimeout,
+				shutdown.Hook{Name: "deps", Fn: func(context.Context) error {
+					bootstrap.CloseDeps(deps)
+					return nil
+				}},
+			); drainErr != nil {
+				apiLogger.Error("shutdown error", slog.Any("error", drainErr))
+			}
 			return fmt.Errorf("http server error: %w", err)
 		}
 		apiLogger.Info("http server shutdown")
 	}
-	
-	// 优雅关闭
+
+	// 优雅关闭：先停止接收新请求，再释放依赖
 	apiLogger.Info("Shutting down http server", slog.Duration("shutdown_timeout", shutdownTimeout))
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer shutdownCancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := shutdown.DrainWithTimeout(shutdownTimeout,
+		shutdown.Hook{Name: "deps", Fn: func(context.Context) error {
+			bootstrap.CloseDeps(deps)
+			return nil
+		}},
+		shutdown.Hook{Name: "http", Fn: func(ctx context.Context) error {
+			return server.Shutdown(ctx)
+		}},
+	); err != nil {
 		apiLogger.Error("http server error", slog.Any("error", err))
 	}
 	cancelFunc()
+
 	apiLogger.Info("Shutting down graceful kraken-api", slog.String("address", apiConfig.HTTP.Addr))
 	return nil
 }
