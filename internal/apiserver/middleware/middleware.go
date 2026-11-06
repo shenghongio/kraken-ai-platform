@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"time"
-	
+
 	"github.com/shenghongio/kraken-ai-platform/internal/apiserver/response"
 )
 
@@ -130,15 +130,15 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 			switch {
 			case rw.status >= 500:
-				
+
 				l.Error("request", args...)
 			case rw.status >= 400:
 				l.Warn("request", args...)
 			case rw.status >= 300:
-			
+
 			default:
 				l.Info("request", args...)
-				
+
 			}
 			//l.Info("request",
 			//	slog.String("method", r.Method),
@@ -148,7 +148,7 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			//	slog.String("request_id", r.Header.Get("X-Request-Id")),
 			//	slog.Int("status", rw.status),
 			//)
-			
+
 		})
 	}
 }

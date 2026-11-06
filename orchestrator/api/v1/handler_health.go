@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-	
+
 	"github.com/shenghongio/kraken-ai-platform/platform/health"
 )
 

@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 	"time"
-	
+
 	"github.com/shenghongio/kraken-ai-platform/orchestrator/api/v1"
 	"github.com/shenghongio/kraken-ai-platform/orchestrator/domain"
 )
@@ -53,7 +53,7 @@ func (c *Client) Register(ctx context.Context, req *v1.RegisterAgentRequest) err
 		return err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return readError(resp)
 	}
@@ -71,7 +71,7 @@ func (c *Client) Heartbeat(ctx context.Context, req *v1.HeartbeatRequest) error 
 		return err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode == http.StatusNotFound {
 		return domain.ErrNotFound
 	}
@@ -92,7 +92,7 @@ func (c *Client) Claim(ctx context.Context, req *v1.ClaimTaskRequest) (*v1.Claim
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	// 204 No Content: 没有可申领的任务
 	if resp.StatusCode == http.StatusNoContent {
 		return nil, nil
@@ -100,7 +100,7 @@ func (c *Client) Claim(ctx context.Context, req *v1.ClaimTaskRequest) (*v1.Claim
 	if resp.StatusCode != http.StatusOK {
 		return nil, readError(resp)
 	}
-	
+
 	var claimResp v1.ClaimTaskResponse
 	if err := json.NewDecoder(resp.Body).Decode(&claimResp); err != nil {
 		return nil, fmt.Errorf("decode claim response: %w", err)
@@ -119,7 +119,7 @@ func (c *Client) SendCallback(ctx context.Context, req *v1.CallbackRequest) erro
 		return err
 	}
 	defer resp.Body.Close()
-	
+
 	switch resp.StatusCode {
 	case http.StatusNoContent, http.StatusOK:
 		return nil
