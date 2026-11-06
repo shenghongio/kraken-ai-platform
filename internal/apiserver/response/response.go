@@ -1,20 +1,13 @@
 package response
 
 import (
-	"encoding/json"
 	"net/http"
+
+	"github.com/shenghongio/kraken-ai-platform/platform/httpx"
 )
 
-type ErrorResponse struct {
-	Error string `json:"error"`
-	Code  string `json:"code,omitempty"`
-}
+type ErrorResponse = httpx.ErrorResponse
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
 func WriteError(w http.ResponseWriter, status int, msg, code string) {
-	writeJSON(w, status, ErrorResponse{Error: msg, Code: code})
+	httpx.Error(w, status, msg, code)
 }
