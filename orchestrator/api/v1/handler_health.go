@@ -5,17 +5,17 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-
+	
 	"github.com/shenghongio/kraken-ai-platform/platform/health"
 )
 
 type HealthHandler struct {
-	cheeck *health.Checker
-	logger *slog.Logger
+	checker *health.Checker
+	logger  *slog.Logger
 }
 
-func NewHealthHandler(cheeck *health.Checker, logger *slog.Logger) *HealthHandler {
-	return &HealthHandler{cheeck: cheeck, logger: logger}
+func NewHealthHandler(checker *health.Checker, logger *slog.Logger) *HealthHandler {
+	return &HealthHandler{checker: checker, logger: logger}
 }
 
 // Healthz  /healthz - 进程存活，不检查依赖
@@ -27,7 +27,7 @@ func (h *HealthHandler) Healthz(w http.ResponseWriter, r *http.Request) {
 func (h *HealthHandler) Readyz(w http.ResponseWriter, r *http.Request) {
 	withTimeout, cancelFunc := context.WithTimeout(r.Context(), time.Second*2)
 	defer cancelFunc()
-	if err := h.cheeck.Readiness(withTimeout); err != nil {
+	if err := h.checker.Readiness(withTimeout); err != nil {
 		h.logger.Warn("readiness check failed", slog.Any("error", err))
 		writeError(w, http.StatusServiceUnavailable, "db not ready", "db_unavailable")
 		return
